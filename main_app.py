@@ -28,11 +28,13 @@ class PhotoAIApp:
         
         self.tab_scan = self.tabview.add("1. Scan")
         self.tab_cluster = self.tabview.add("2. Cluster")
-        self.tab_review = self.tabview.add("3. Review")
-        self.tab_organize = self.tabview.add("4. Organize")
+        self.tab_recognize = self.tabview.add("3. Recognize")
+        self.tab_review = self.tabview.add("4. Review")
+        self.tab_organize = self.tabview.add("5. Organize")
         
         self.setup_scan_tab()
         self.setup_cluster_tab()
+        self.setup_recognize_tab()
         self.setup_review_tab()
         self.setup_organize_tab()
     
@@ -261,7 +263,7 @@ class PhotoAIApp:
         self.scan_progress.set(1)
         self.scan_status.configure(text=f"Done! Scanned {total} photos")
         self.refresh_stats()
-        messagebox.showinfo("Done", f"Scanned {total} photos!\n\nGo to Tab 2.")
+        messagebox.showinfo("Done", f"Scanned {total} photos!\n\nGo to Tab 2 to cluster.")
     
     def preview_category(self, category):
         for w in self.preview_scroll.winfo_children():
@@ -309,10 +311,7 @@ class PhotoAIApp:
         top = ctk.CTkFrame(self.tab_cluster)
         top.pack(fill="x", padx=10, pady=10)
         
-        ctk.CTkLabel(top, text="FACE CLUSTERING", font=("Arial", 18, "bold")).pack(side="left", padx=10)
-        
-        self.solo_only = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(top, text="Solo only (recommended)", variable=self.solo_only).pack(side="left", padx=10)
+        ctk.CTkLabel(top, text="STEP 1: CLUSTER SOLO PHOTOS", font=("Arial", 18, "bold")).pack(side="left", padx=10)
         
         self.cluster_status = ctk.CTkLabel(top, text="")
         self.cluster_status.pack(side="right", padx=20)
@@ -336,6 +335,10 @@ class PhotoAIApp:
         
         ctk.CTkLabel(btn_frame, text="Lower=stricter", text_color="gray").pack(side="left", padx=5)
         
+        info = ctk.CTkLabel(self.tab_cluster, text="This clusters SOLO photos only (1 face per photo). Name each cluster, then go to Tab 3 to find more photos.", 
+                           text_color="yellow", wraplength=800)
+        info.pack(pady=5)
+        
         self.cluster_scroll = ctk.CTkScrollableFrame(self.tab_cluster)
         self.cluster_scroll.pack(fill="both", expand=True, padx=10, pady=10)
     
@@ -345,15 +348,10 @@ class PhotoAIApp:
             return
         
         cursor = self.db.conn.cursor()
-        
-        if self.solo_only.get():
-            cursor.execute('''SELECT f.id, f.photo_id, f.x, f.y, f.width, f.height, p.path
-                             FROM faces f JOIN photos p ON f.photo_id = p.id
-                             WHERE f.embedding IS NULL AND p.category = 'solo' ''')
-        else:
-            cursor.execute('''SELECT f.id, f.photo_id, f.x, f.y, f.width, f.height, p.path
-                             FROM faces f JOIN photos p ON f.photo_id = p.id
-                             WHERE f.embedding IS NULL AND p.category IN ('solo', 'duo')''')
+        # ONLY solo photos
+        cursor.execute('''SELECT f.id, f.photo_id, f.x, f.y, f.width, f.height, p.path
+                         FROM faces f JOIN photos p ON f.photo_id = p.id
+                         WHERE f.embedding IS NULL AND p.category = 'solo' ''')
         
         faces = cursor.fetchall()
         total = len(faces)
@@ -373,6 +371,15 @@ class PhotoAIApp:
             try:
                 img = Image.open(path)
                 
+                # Validate coordinates
+                x = max(0, min(x, img.width - 1))
+                y = max(0, min(y, img.height - 1))
+                w = min(w, img.width - x)
+                h = min(h, img.height - y)
+                
+                if w < 20 or h < 20:
+                    continue
+                
                 pad = int(min(w, h) * 0.2)
                 x1 = max(0, x - pad)
                 y1 = max(0, y - pad)
@@ -380,6 +387,10 @@ class PhotoAIApp:
                 y2 = min(img.height, y + h + pad)
                 
                 face_img = img.crop((x1, y1, x2, y2))
+                
+                if face_img.width < 10 or face_img.height < 10:
+                    continue
+                    
                 face_img = face_img.resize((160, 160))
                 
                 temp_path = "temp_emb.jpg"
@@ -393,7 +404,8 @@ class PhotoAIApp:
                 
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
-            except:
+            except Exception as e:
+                print(f"Error: {e}")
                 pass
         
         self.cluster_status.configure(text=f"Extracted {extracted}")
@@ -401,15 +413,10 @@ class PhotoAIApp:
     
     def run_clustering(self):
         cursor = self.db.conn.cursor()
-        
-        if self.solo_only.get():
-            cursor.execute('''SELECT f.id, f.embedding FROM faces f 
-                             JOIN photos p ON f.photo_id = p.id
-                             WHERE f.embedding IS NOT NULL AND p.category = 'solo' ''')
-        else:
-            cursor.execute('''SELECT f.id, f.embedding FROM faces f 
-                             JOIN photos p ON f.photo_id = p.id
-                             WHERE f.embedding IS NOT NULL AND p.category IN ('solo', 'duo')''')
+        # ONLY solo photos
+        cursor.execute('''SELECT f.id, f.embedding FROM faces f 
+                         JOIN photos p ON f.photo_id = p.id
+                         WHERE f.embedding IS NOT NULL AND p.category = 'solo' ''')
         
         faces = cursor.fetchall()
         
@@ -467,7 +474,7 @@ class PhotoAIApp:
         self.show_clusters()
         
         large = sum(1 for c in clusters if len(c['faces']) >= 3)
-        messagebox.showinfo("Done", f"{len(clusters)} groups found!\n{large} have 3+ faces")
+        messagebox.showinfo("Done", f"{len(clusters)} groups found!\n{large} have 3+ faces\n\nName clusters, then go to Tab 3!")
     
     def clear_clusters(self):
         if messagebox.askyesno("Confirm", "Clear all clusters?"):
@@ -522,6 +529,7 @@ class PhotoAIApp:
             if name:
                 ctk.CTkLabel(header, text="✓", text_color="lime", font=("Arial", 16)).pack(side="left")
             
+            # Show face thumbnails
             faces = self.db.get_faces_by_cluster(cid)
             thumb = ctk.CTkFrame(frame)
             thumb.pack(fill="x", padx=10, pady=5)
@@ -529,6 +537,16 @@ class PhotoAIApp:
             for i, (fid, photo_id, x, y, w, h, path) in enumerate(faces[:12]):
                 try:
                     img = Image.open(path)
+                    
+                    # Validate and fix coordinates
+                    x = max(0, min(x, img.width - 1))
+                    y = max(0, min(y, img.height - 1))
+                    w = min(w, img.width - x)
+                    h = min(h, img.height - y)
+                    
+                    if w < 10 or h < 10:
+                        continue
+                    
                     face_img = img.crop((x, y, x+w, y+h))
                     face_img = face_img.resize((70, 70))
                     photo = ImageTk.PhotoImage(face_img)
@@ -541,6 +559,194 @@ class PhotoAIApp:
             
             if len(faces) > 12:
                 ctk.CTkLabel(thumb, text=f"+{len(faces)-12}").pack(side="left", padx=5)
+    
+    def setup_recognize_tab(self):
+        """Tab 3: Use named people to find them in ALL photos"""
+        top = ctk.CTkFrame(self.tab_recognize)
+        top.pack(fill="x", padx=10, pady=10)
+        
+        ctk.CTkLabel(top, text="STEP 2: FIND PEOPLE IN ALL PHOTOS", font=("Arial", 18, "bold")).pack(side="left", padx=10)
+        
+        self.recog_status = ctk.CTkLabel(top, text="")
+        self.recog_status.pack(side="right", padx=20)
+        
+        info = ctk.CTkLabel(self.tab_recognize, 
+                           text="This will search GROUP and DUO photos for people you've named in Tab 2.\nFirst, name at least one cluster in Tab 2!", 
+                           text_color="yellow", wraplength=800)
+        info.pack(pady=10)
+        
+        btn_frame = ctk.CTkFrame(self.tab_recognize)
+        btn_frame.pack(fill="x", padx=10, pady=10)
+        
+        ctk.CTkButton(btn_frame, text="1. Extract ALL Face Embeddings", command=self.extract_all_embeddings, width=220).pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="2. Find Named People", command=self.recognize_people, width=180, fg_color="green").pack(side="left", padx=10)
+        
+        threshold_frame = ctk.CTkFrame(btn_frame)
+        threshold_frame.pack(side="left", padx=20)
+        ctk.CTkLabel(threshold_frame, text="Match threshold:").pack(side="left")
+        self.recog_threshold = ctk.DoubleVar(value=0.55)
+        ctk.CTkSlider(threshold_frame, from_=0.4, to=0.8, variable=self.recog_threshold, width=100).pack(side="left", padx=5)
+        self.recog_thresh_label = ctk.CTkLabel(threshold_frame, text="0.55")
+        self.recog_thresh_label.pack(side="left")
+        
+        self.recog_scroll = ctk.CTkScrollableFrame(self.tab_recognize)
+        self.recog_scroll.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        self.show_named_people()
+    
+    def extract_all_embeddings(self):
+        """Extract embeddings from ALL faces (group, duo) that don't have them yet"""
+        if not DEEPFACE_AVAILABLE:
+            messagebox.showerror("Error", "DeepFace not installed!")
+            return
+        
+        cursor = self.db.conn.cursor()
+        cursor.execute('''SELECT f.id, f.photo_id, f.x, f.y, f.width, f.height, p.path
+                         FROM faces f JOIN photos p ON f.photo_id = p.id
+                         WHERE f.embedding IS NULL''')
+        
+        faces = cursor.fetchall()
+        total = len(faces)
+        
+        if total == 0:
+            messagebox.showinfo("Info", "All faces have embeddings!\n\nClick 'Find Named People'")
+            return
+        
+        self.recog_status.configure(text=f"Processing {total} faces...")
+        self.window.update()
+        
+        extracted = 0
+        for i, (fid, pid, x, y, w, h, path) in enumerate(faces):
+            self.recog_status.configure(text=f"Processing {i+1}/{total}...")
+            self.window.update()
+            
+            try:
+                img = Image.open(path)
+                
+                x = max(0, min(x, img.width - 1))
+                y = max(0, min(y, img.height - 1))
+                w = min(w, img.width - x)
+                h = min(h, img.height - y)
+                
+                if w < 20 or h < 20:
+                    continue
+                
+                pad = int(min(w, h) * 0.2)
+                x1 = max(0, x - pad)
+                y1 = max(0, y - pad)
+                x2 = min(img.width, x + w + pad)
+                y2 = min(img.height, y + h + pad)
+                
+                face_img = img.crop((x1, y1, x2, y2))
+                
+                if face_img.width < 10 or face_img.height < 10:
+                    continue
+                    
+                face_img = face_img.resize((160, 160))
+                
+                temp_path = "temp_emb.jpg"
+                face_img.save(temp_path, quality=95)
+                
+                result = DeepFace.represent(temp_path, model_name='Facenet', enforce_detection=False)
+                
+                if result:
+                    self.db.update_face_embedding(fid, result[0]['embedding'])
+                    extracted += 1
+                
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except:
+                pass
+        
+        self.recog_status.configure(text=f"Extracted {extracted}")
+        messagebox.showinfo("Done", f"Extracted {extracted} embeddings.\n\nNow click 'Find Named People'")
+    
+    def recognize_people(self):
+        """Match unnamed faces to named people"""
+        cursor = self.db.conn.cursor()
+        
+        # Get all named people and their face embeddings
+        cursor.execute('''SELECT p.id, p.name FROM people p''')
+        people = cursor.fetchall()
+        
+        if not people:
+            messagebox.showwarning("Warning", "No named people!\n\nGo to Tab 2 and name some clusters first.")
+            return
+        
+        # Build person embeddings (average of all their faces)
+        person_embeddings = {}
+        for person_id, name in people:
+            cursor.execute('''SELECT f.embedding FROM faces f WHERE f.person_id = ? AND f.embedding IS NOT NULL''', (person_id,))
+            embs = cursor.fetchall()
+            if embs:
+                embeddings = [np.array(json.loads(e[0])) for e in embs]
+                person_embeddings[person_id] = {
+                    'name': name,
+                    'embedding': np.mean(embeddings, axis=0)
+                }
+        
+        if not person_embeddings:
+            messagebox.showwarning("Warning", "Named people have no embeddings!")
+            return
+        
+        # Get all unassigned faces with embeddings
+        cursor.execute('''SELECT f.id, f.embedding FROM faces f WHERE f.person_id IS NULL AND f.embedding IS NOT NULL''')
+        unassigned = cursor.fetchall()
+        
+        if not unassigned:
+            messagebox.showinfo("Info", "No unassigned faces to match!")
+            return
+        
+        self.recog_status.configure(text=f"Matching {len(unassigned)} faces...")
+        self.window.update()
+        
+        threshold = self.recog_threshold.get()
+        matched = 0
+        
+        for fid, emb_json in unassigned:
+            try:
+                emb = np.array(json.loads(emb_json))
+                
+                best_person = None
+                best_sim = -1
+                
+                for person_id, data in person_embeddings.items():
+                    dot = np.dot(emb, data['embedding'])
+                    norm = np.linalg.norm(emb) * np.linalg.norm(data['embedding'])
+                    if norm > 0:
+                        sim = dot / norm
+                        if sim > best_sim:
+                            best_sim = sim
+                            best_person = person_id
+                
+                if best_person and best_sim >= threshold:
+                    self.db.update_face_person(fid, best_person)
+                    matched += 1
+            except:
+                pass
+        
+        self.recog_status.configure(text=f"Matched {matched} faces!")
+        self.show_named_people()
+        messagebox.showinfo("Done", f"Found {matched} additional faces!\n\nGo to Tab 4 to review.")
+    
+    def show_named_people(self):
+        for w in self.recog_scroll.winfo_children():
+            w.destroy()
+        
+        people = self.db.get_all_people()
+        
+        if not people:
+            ctk.CTkLabel(self.recog_scroll, text="No named people yet.\n\nGo to Tab 2 and name some clusters!",
+                        font=("Arial", 14)).pack(pady=50)
+            return
+        
+        ctk.CTkLabel(self.recog_scroll, text="Named People (will search for these):",
+                    font=("Arial", 14, "bold")).pack(pady=10)
+        
+        for pid, name, count in people:
+            frame = ctk.CTkFrame(self.recog_scroll, fg_color="gray25")
+            frame.pack(fill="x", pady=5, padx=10)
+            ctk.CTkLabel(frame, text=f"{name}: {count} photos", font=("Arial", 12)).pack(side="left", padx=10, pady=5)
     
     def setup_review_tab(self):
         top = ctk.CTkFrame(self.tab_review)
