@@ -98,17 +98,17 @@ class PhotoAIApp:
         
         self.stat_labels = {}
         for key, label in [('total_photos', 'Total Photos'), ('scanned', 'Scanned'), 
-                           ('solo', 'Solo (1 face)'), ('duo', 'Duo (2 faces)'),
+                           ('solo', 'Solo (1 face) - BEST'), ('duo', 'Duo (2 faces)'),
                            ('group', 'Group (3+)'), ('no_faces', 'No Faces'), ('total_faces', 'Total Faces')]:
             f = ctk.CTkFrame(stats_frame)
             f.pack(fill="x", pady=3)
-            ctk.CTkLabel(f, text=f"{label}:", width=180, anchor="w", font=("Arial", 12)).pack(side="left")
+            ctk.CTkLabel(f, text=f"{label}:", width=200, anchor="w", font=("Arial", 12)).pack(side="left")
             self.stat_labels[key] = ctk.CTkLabel(f, text="0", font=("Arial", 14, "bold"))
             self.stat_labels[key].pack(side="left")
         
         ctk.CTkButton(right, text="Refresh Stats", command=self.refresh_stats).pack(pady=10)
         
-        ctk.CTkLabel(right, text="PREVIEW BY CATEGORY", font=("Arial", 14, "bold")).pack(pady=10)
+        ctk.CTkLabel(right, text="PREVIEW", font=("Arial", 14, "bold")).pack(pady=10)
         
         preview_btns = ctk.CTkFrame(right)
         preview_btns.pack(fill="x", padx=20)
@@ -152,7 +152,6 @@ class PhotoAIApp:
         
         try:
             img = Image.open(path)
-            original_size = img.size
             scale = 1.0
             
             if self.resize_for_detection.get():
@@ -192,7 +191,7 @@ class PhotoAIApp:
             
             return good_faces
             
-        except Exception as e:
+        except:
             return []
     
     def scan_all_photos(self):
@@ -224,7 +223,7 @@ class PhotoAIApp:
                         except:
                             pass
         
-        self.scan_status.configure(text=f"Found {total_added} new photos. Detecting faces...")
+        self.scan_status.configure(text=f"Found {total_added} new photos. Detecting...")
         self.window.update()
         
         photos = self.db.get_unscanned_photos()
@@ -238,7 +237,7 @@ class PhotoAIApp:
         for i, (pid, path, filename) in enumerate(photos):
             progress = (i + 1) / total
             self.scan_progress.set(progress)
-            self.scan_status.configure(text=f"Scanning {i+1}/{total}: {filename[:25]}...")
+            self.scan_status.configure(text=f"Scanning {i+1}/{total}...")
             self.window.update()
             
             faces = self.detect_faces_in_image(path)
@@ -262,7 +261,7 @@ class PhotoAIApp:
         self.scan_progress.set(1)
         self.scan_status.configure(text=f"Done! Scanned {total} photos")
         self.refresh_stats()
-        messagebox.showinfo("Scan Complete", f"Scanned {total} photos!\n\nGo to Tab 2 to cluster faces.")
+        messagebox.showinfo("Done", f"Scanned {total} photos!\n\nGo to Tab 2.")
     
     def preview_category(self, category):
         for w in self.preview_scroll.winfo_children():
@@ -274,7 +273,7 @@ class PhotoAIApp:
             ctk.CTkLabel(self.preview_scroll, text=f"No {category} photos").pack(pady=20)
             return
         
-        ctk.CTkLabel(self.preview_scroll, text=f"Found {len(photos)} {category} photos", 
+        ctk.CTkLabel(self.preview_scroll, text=f"{len(photos)} {category} photos", 
                     font=("Arial", 12, "bold")).pack(pady=5)
         
         row = None
@@ -310,24 +309,32 @@ class PhotoAIApp:
         top = ctk.CTkFrame(self.tab_cluster)
         top.pack(fill="x", padx=10, pady=10)
         
-        ctk.CTkLabel(top, text="AUTO-CLUSTERING", font=("Arial", 18, "bold")).pack(side="left", padx=10)
+        ctk.CTkLabel(top, text="FACE CLUSTERING", font=("Arial", 18, "bold")).pack(side="left", padx=10)
         
-        ctk.CTkButton(top, text="1. Extract Embeddings", command=self.extract_embeddings, width=160).pack(side="left", padx=10)
-        ctk.CTkButton(top, text="2. Run Clustering", command=self.run_clustering, width=140, fg_color="green").pack(side="left", padx=10)
-        ctk.CTkButton(top, text="Clear", command=self.clear_clusters, width=80, fg_color="darkred").pack(side="left", padx=10)
-        
-        threshold_frame = ctk.CTkFrame(top)
-        threshold_frame.pack(side="left", padx=20)
-        ctk.CTkLabel(threshold_frame, text="Threshold:").pack(side="left")
-        self.threshold_var = ctk.DoubleVar(value=10.0)
-        self.threshold_slider = ctk.CTkSlider(threshold_frame, from_=5, to=20, variable=self.threshold_var, width=100)
-        self.threshold_slider.pack(side="left", padx=5)
-        self.threshold_label = ctk.CTkLabel(threshold_frame, text="10.0")
-        self.threshold_label.pack(side="left")
-        self.threshold_slider.configure(command=lambda v: self.threshold_label.configure(text=f"{float(v):.1f}"))
+        self.solo_only = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(top, text="Solo only (recommended)", variable=self.solo_only).pack(side="left", padx=10)
         
         self.cluster_status = ctk.CTkLabel(top, text="")
         self.cluster_status.pack(side="right", padx=20)
+        
+        btn_frame = ctk.CTkFrame(self.tab_cluster)
+        btn_frame.pack(fill="x", padx=10, pady=5)
+        
+        ctk.CTkButton(btn_frame, text="1. Extract Embeddings", command=self.extract_embeddings, width=160).pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="2. Run Clustering", command=self.run_clustering, width=140, fg_color="green").pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="Clear", command=self.clear_clusters, width=80, fg_color="darkred").pack(side="left", padx=10)
+        
+        threshold_frame = ctk.CTkFrame(btn_frame)
+        threshold_frame.pack(side="left", padx=20)
+        ctk.CTkLabel(threshold_frame, text="Similarity:").pack(side="left")
+        self.threshold_var = ctk.DoubleVar(value=0.55)
+        self.threshold_slider = ctk.CTkSlider(threshold_frame, from_=0.3, to=0.9, variable=self.threshold_var, width=120)
+        self.threshold_slider.pack(side="left", padx=5)
+        self.threshold_label = ctk.CTkLabel(threshold_frame, text="0.55")
+        self.threshold_label.pack(side="left")
+        self.threshold_slider.configure(command=lambda v: self.threshold_label.configure(text=f"{float(v):.2f}"))
+        
+        ctk.CTkLabel(btn_frame, text="Lower=stricter", text_color="gray").pack(side="left", padx=5)
         
         self.cluster_scroll = ctk.CTkScrollableFrame(self.tab_cluster)
         self.cluster_scroll.pack(fill="both", expand=True, padx=10, pady=10)
@@ -338,17 +345,24 @@ class PhotoAIApp:
             return
         
         cursor = self.db.conn.cursor()
-        cursor.execute('''SELECT f.id, f.photo_id, f.x, f.y, f.width, f.height, p.path
-                         FROM faces f JOIN photos p ON f.photo_id = p.id
-                         WHERE f.embedding IS NULL AND p.category IN ('solo', 'duo')''')
-        faces = cursor.fetchall()
         
+        if self.solo_only.get():
+            cursor.execute('''SELECT f.id, f.photo_id, f.x, f.y, f.width, f.height, p.path
+                             FROM faces f JOIN photos p ON f.photo_id = p.id
+                             WHERE f.embedding IS NULL AND p.category = 'solo' ''')
+        else:
+            cursor.execute('''SELECT f.id, f.photo_id, f.x, f.y, f.width, f.height, p.path
+                             FROM faces f JOIN photos p ON f.photo_id = p.id
+                             WHERE f.embedding IS NULL AND p.category IN ('solo', 'duo')''')
+        
+        faces = cursor.fetchall()
         total = len(faces)
+        
         if total == 0:
-            messagebox.showinfo("Info", "All faces already have embeddings!\n\nClick 'Run Clustering' next.")
+            messagebox.showinfo("Info", "All done! Click 'Run Clustering'")
             return
         
-        self.cluster_status.configure(text=f"Extracting {total} embeddings...")
+        self.cluster_status.configure(text=f"Processing {total} faces...")
         self.window.update()
         
         extracted = 0
@@ -382,14 +396,21 @@ class PhotoAIApp:
             except:
                 pass
         
-        self.cluster_status.configure(text=f"Extracted {extracted} embeddings")
-        messagebox.showinfo("Done", f"Extracted {extracted} embeddings.\n\nNow click 'Run Clustering'")
+        self.cluster_status.configure(text=f"Extracted {extracted}")
+        messagebox.showinfo("Done", f"Extracted {extracted} embeddings.\n\nClick 'Run Clustering'")
     
     def run_clustering(self):
         cursor = self.db.conn.cursor()
-        cursor.execute('''SELECT f.id, f.embedding FROM faces f 
-                         JOIN photos p ON f.photo_id = p.id
-                         WHERE f.embedding IS NOT NULL AND p.category IN ('solo', 'duo')''')
+        
+        if self.solo_only.get():
+            cursor.execute('''SELECT f.id, f.embedding FROM faces f 
+                             JOIN photos p ON f.photo_id = p.id
+                             WHERE f.embedding IS NOT NULL AND p.category = 'solo' ''')
+        else:
+            cursor.execute('''SELECT f.id, f.embedding FROM faces f 
+                             JOIN photos p ON f.photo_id = p.id
+                             WHERE f.embedding IS NOT NULL AND p.category IN ('solo', 'duo')''')
+        
         faces = cursor.fetchall()
         
         if len(faces) < 2:
@@ -414,18 +435,23 @@ class PhotoAIApp:
         
         for face in face_data:
             best_cluster = None
-            best_dist = float('inf')
+            best_sim = -1
             
             for cluster in clusters:
-                cluster_embeddings = [f['embedding'] for f in cluster['faces']]
-                cluster_center = np.mean(cluster_embeddings, axis=0)
-                dist = np.linalg.norm(face['embedding'] - cluster_center)
+                sims = []
+                for cf in cluster['faces']:
+                    dot = np.dot(face['embedding'], cf['embedding'])
+                    norm = np.linalg.norm(face['embedding']) * np.linalg.norm(cf['embedding'])
+                    if norm > 0:
+                        sims.append(dot / norm)
                 
-                if dist < best_dist:
-                    best_dist = dist
-                    best_cluster = cluster
+                if sims:
+                    avg_sim = np.mean(sims)
+                    if avg_sim > best_sim:
+                        best_sim = avg_sim
+                        best_cluster = cluster
             
-            if best_cluster and best_dist < threshold:
+            if best_cluster and best_sim >= threshold:
                 best_cluster['faces'].append(face)
             else:
                 clusters.append({'faces': [face]})
@@ -433,17 +459,15 @@ class PhotoAIApp:
         clusters.sort(key=lambda c: len(c['faces']), reverse=True)
         
         for cluster in clusters:
-            cluster_embeddings = [f['embedding'] for f in cluster['faces']]
-            avg_emb = np.mean(cluster_embeddings, axis=0).tolist()
-            cluster_id = self.db.create_cluster(avg_emb)
+            cluster_id = self.db.create_cluster()
             for face in cluster['faces']:
                 self.db.update_face_cluster(face['id'], cluster_id)
         
-        self.cluster_status.configure(text=f"Created {len(clusters)} clusters")
+        self.cluster_status.configure(text=f"{len(clusters)} clusters")
         self.show_clusters()
         
-        large_clusters = sum(1 for c in clusters if len(c['faces']) >= 3)
-        messagebox.showinfo("Done", f"Found {len(clusters)} face groups!\n\n{large_clusters} groups have 3+ faces.\n\nAdjust threshold slider and re-cluster if needed.")
+        large = sum(1 for c in clusters if len(c['faces']) >= 3)
+        messagebox.showinfo("Done", f"{len(clusters)} groups found!\n{large} have 3+ faces")
     
     def clear_clusters(self):
         if messagebox.askyesno("Confirm", "Clear all clusters?"):
@@ -457,18 +481,16 @@ class PhotoAIApp:
         clusters = self.db.get_all_clusters()
         
         if not clusters:
-            ctk.CTkLabel(self.cluster_scroll, text="No clusters yet.\n\n1. Scan photos in Tab 1\n2. Extract Embeddings\n3. Run Clustering", 
+            ctk.CTkLabel(self.cluster_scroll, text="No clusters.\n\n1. Extract Embeddings\n2. Run Clustering", 
                         font=("Arial", 14)).pack(pady=50)
             return
         
-        total_clusters = len(clusters)
-        large_clusters = sum(1 for c in clusters if c[4] >= 3)
-        ctk.CTkLabel(self.cluster_scroll, 
-                    text=f"Total: {total_clusters} clusters | {large_clusters} with 3+ faces",
+        large = sum(1 for c in clusters if c[4] >= 3)
+        ctk.CTkLabel(self.cluster_scroll, text=f"{len(clusters)} clusters | {large} with 3+ faces",
                     font=("Arial", 12, "bold")).pack(pady=10)
         
-        for cid, name, fc, pid, actual_count in clusters:
-            if actual_count == 0:
+        for cid, name, fc, pid, count in clusters:
+            if count == 0:
                 continue
             
             frame = ctk.CTkFrame(self.cluster_scroll, fg_color="gray20")
@@ -477,37 +499,32 @@ class PhotoAIApp:
             header = ctk.CTkFrame(frame)
             header.pack(fill="x", padx=10, pady=5)
             
-            if actual_count >= 5:
-                count_color = "lime"
-            elif actual_count >= 3:
-                count_color = "yellow"
-            else:
-                count_color = "gray"
+            color = "lime" if count >= 5 else "yellow" if count >= 3 else "gray"
+            stars = "★★★" if count >= 5 else "★★" if count >= 3 else "★" if count >= 2 else ""
             
-            ctk.CTkLabel(header, text=f"Cluster #{cid}", font=("Arial", 12, "bold")).pack(side="left", padx=5)
-            ctk.CTkLabel(header, text=f"({actual_count} faces)", text_color=count_color, font=("Arial", 12, "bold")).pack(side="left", padx=5)
+            ctk.CTkLabel(header, text=f"{stars} #{cid}", font=("Arial", 12, "bold")).pack(side="left", padx=5)
+            ctk.CTkLabel(header, text=f"({count})", text_color=color, font=("Arial", 12, "bold")).pack(side="left", padx=5)
             
             name_var = ctk.StringVar(value=name or "")
-            name_entry = ctk.CTkEntry(header, textvariable=name_var, width=150, placeholder_text="Enter name...")
-            name_entry.pack(side="left", padx=10)
+            ctk.CTkEntry(header, textvariable=name_var, width=150, placeholder_text="Name...").pack(side="left", padx=10)
             
-            def save_name(c=cid, v=name_var):
+            def save(c=cid, v=name_var):
                 n = v.get().strip()
                 if n:
-                    person_id = self.db.add_person(n)
+                    pid = self.db.add_person(n)
                     self.db.update_cluster_name(c, n)
-                    self.db.update_cluster_person(c, person_id)
+                    self.db.update_cluster_person(c, pid)
                     self.cluster_status.configure(text=f"Saved: {n}")
                     self.show_clusters()
             
-            ctk.CTkButton(header, text="Save", width=60, command=save_name).pack(side="left", padx=5)
+            ctk.CTkButton(header, text="Save", width=60, command=save).pack(side="left", padx=5)
             
             if name:
                 ctk.CTkLabel(header, text="✓", text_color="lime", font=("Arial", 16)).pack(side="left")
             
             faces = self.db.get_faces_by_cluster(cid)
-            thumb_frame = ctk.CTkFrame(frame)
-            thumb_frame.pack(fill="x", padx=10, pady=5)
+            thumb = ctk.CTkFrame(frame)
+            thumb.pack(fill="x", padx=10, pady=5)
             
             for i, (fid, photo_id, x, y, w, h, path) in enumerate(faces[:12]):
                 try:
@@ -516,23 +533,23 @@ class PhotoAIApp:
                     face_img = face_img.resize((70, 70))
                     photo = ImageTk.PhotoImage(face_img)
                     
-                    lbl = tk.Label(thumb_frame, image=photo, bg="#2b2b2b")
+                    lbl = tk.Label(thumb, image=photo, bg="#2b2b2b")
                     lbl.image = photo
                     lbl.pack(side="left", padx=2)
                 except:
                     pass
             
             if len(faces) > 12:
-                ctk.CTkLabel(thumb_frame, text=f"+{len(faces)-12}").pack(side="left", padx=5)
+                ctk.CTkLabel(thumb, text=f"+{len(faces)-12}").pack(side="left", padx=5)
     
     def setup_review_tab(self):
         top = ctk.CTkFrame(self.tab_review)
         top.pack(fill="x", padx=10, pady=10)
         
-        ctk.CTkLabel(top, text="Filter:", font=("Arial", 12)).pack(side="left", padx=10)
+        ctk.CTkLabel(top, text="Filter:").pack(side="left", padx=10)
         
-        self.review_filter = ctk.StringVar(value="All People")
-        self.review_menu = ctk.CTkOptionMenu(top, variable=self.review_filter, values=["All People"], command=self.filter_review)
+        self.review_filter = ctk.StringVar(value="All")
+        self.review_menu = ctk.CTkOptionMenu(top, variable=self.review_filter, values=["All"], command=self.filter_review)
         self.review_menu.pack(side="left", padx=5)
         
         ctk.CTkButton(top, text="Refresh", command=self.refresh_review).pack(side="left", padx=10)
@@ -542,9 +559,9 @@ class PhotoAIApp:
     
     def refresh_review(self):
         people = self.db.get_all_people()
-        names = ["All People"] + [p[1] for p in people]
+        names = ["All"] + [p[1] for p in people]
         self.review_menu.configure(values=names)
-        self.filter_review("All People")
+        self.filter_review("All")
     
     def filter_review(self, choice):
         for w in self.review_scroll.winfo_children():
@@ -553,28 +570,28 @@ class PhotoAIApp:
         people = self.db.get_all_people()
         
         if not people:
-            ctk.CTkLabel(self.review_scroll, text="No people named yet.\n\nGo to Tab 2 and name clusters!",
+            ctk.CTkLabel(self.review_scroll, text="No people yet.\n\nName clusters in Tab 2!",
                         font=("Arial", 14)).pack(pady=50)
             return
         
-        if choice == "All People":
+        if choice == "All":
             for p in people:
-                self.show_person_photos(p[0], p[1], p[2])
+                self.show_person(p[0], p[1], p[2])
         else:
             for p in people:
                 if p[1] == choice:
-                    self.show_person_photos(p[0], p[1], p[2])
+                    self.show_person(p[0], p[1], p[2])
                     break
     
-    def show_person_photos(self, person_id, name, count):
+    def show_person(self, person_id, name, count):
         frame = ctk.CTkFrame(self.review_scroll, fg_color="gray20")
         frame.pack(fill="x", pady=10, padx=10)
         
-        ctk.CTkLabel(frame, text=f"{name} ({count} photos)", font=("Arial", 14, "bold")).pack(anchor="w", padx=10, pady=5)
+        ctk.CTkLabel(frame, text=f"{name} ({count})", font=("Arial", 14, "bold")).pack(anchor="w", padx=10, pady=5)
         
         faces = self.db.get_faces_by_person(person_id)
-        thumb_frame = ctk.CTkFrame(frame)
-        thumb_frame.pack(fill="x", padx=10, pady=5)
+        thumb = ctk.CTkFrame(frame)
+        thumb.pack(fill="x", padx=10, pady=5)
         
         for i, (fid, photo_id, x, y, w, h, path) in enumerate(faces[:15]):
             try:
@@ -584,17 +601,17 @@ class PhotoAIApp:
                 img.thumbnail((120, 120))
                 photo = ImageTk.PhotoImage(img)
                 
-                lbl = tk.Label(thumb_frame, image=photo, bg="#2b2b2b")
+                lbl = tk.Label(thumb, image=photo, bg="#2b2b2b")
                 lbl.image = photo
                 lbl.pack(side="left", padx=2)
             except:
                 pass
         
         if len(faces) > 15:
-            ctk.CTkLabel(thumb_frame, text=f"+{len(faces)-15}").pack(side="left", padx=10)
+            ctk.CTkLabel(thumb, text=f"+{len(faces)-15}").pack(side="left", padx=10)
     
     def setup_organize_tab(self):
-        ctk.CTkLabel(self.tab_organize, text="ORGANIZE PHOTOS", font=("Arial", 18, "bold")).pack(pady=20)
+        ctk.CTkLabel(self.tab_organize, text="ORGANIZE", font=("Arial", 18, "bold")).pack(pady=20)
         
         options = ctk.CTkFrame(self.tab_organize)
         options.pack(fill="x", padx=20, pady=10)
@@ -606,45 +623,45 @@ class PhotoAIApp:
         ctk.CTkRadioButton(modes, text="By Category", variable=self.org_mode, value="category").pack(side="left", padx=20)
         
         self.use_shortcuts = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(options, text="Use shortcuts (don't move originals)", variable=self.use_shortcuts).pack(anchor="w", pady=10)
+        ctk.CTkCheckBox(options, text="Use shortcuts", variable=self.use_shortcuts).pack(anchor="w", pady=10)
         
         folder_frame = ctk.CTkFrame(options)
         folder_frame.pack(fill="x", pady=10)
-        ctk.CTkButton(folder_frame, text="Set Output Folder", command=self.set_output_folder).pack(side="left", padx=5)
-        self.output_folder_label = ctk.CTkLabel(folder_frame, text="Not set", text_color="gray")
-        self.output_folder_label.pack(side="left", padx=10)
+        ctk.CTkButton(folder_frame, text="Set Output", command=self.set_output).pack(side="left", padx=5)
+        self.output_label = ctk.CTkLabel(folder_frame, text="Not set", text_color="gray")
+        self.output_label.pack(side="left", padx=10)
         self.output_folder = None
         
-        ctk.CTkButton(options, text="ORGANIZE NOW", command=self.organize_photos,
+        ctk.CTkButton(options, text="ORGANIZE NOW", command=self.organize,
                      font=("Arial", 14, "bold"), height=50, fg_color="green").pack(fill="x", pady=20)
         
-        self.organize_status = ctk.CTkLabel(options, text="")
-        self.organize_status.pack(pady=10)
+        self.org_status = ctk.CTkLabel(options, text="")
+        self.org_status.pack(pady=10)
     
-    def set_output_folder(self):
-        folder = filedialog.askdirectory(title="Select Output Folder")
+    def set_output(self):
+        folder = filedialog.askdirectory()
         if folder:
             self.output_folder = folder
-            self.output_folder_label.configure(text=folder, text_color="lime")
+            self.output_label.configure(text=folder, text_color="lime")
     
-    def organize_photos(self):
+    def organize(self):
         if not self.output_folder:
-            messagebox.showwarning("Warning", "Set output folder first!")
+            messagebox.showwarning("Warning", "Set output folder!")
             return
         
         import shutil, subprocess
         
         mode = self.org_mode.get()
-        use_shortcuts = self.use_shortcuts.get()
-        organized = 0
+        shortcuts = self.use_shortcuts.get()
+        count = 0
         
         if mode == "people":
-            for pid, name, count in self.db.get_all_people():
-                if count == 0:
+            for pid, name, c in self.db.get_all_people():
+                if c == 0:
                     continue
                 
-                folder_path = os.path.join(self.output_folder, name)
-                os.makedirs(folder_path, exist_ok=True)
+                folder = os.path.join(self.output_folder, name)
+                os.makedirs(folder, exist_ok=True)
                 
                 seen = set()
                 for fid, photo_id, x, y, w, h, path in self.db.get_faces_by_person(pid):
@@ -653,48 +670,47 @@ class PhotoAIApp:
                     seen.add(photo_id)
                     
                     fn = os.path.basename(path)
-                    if use_shortcuts:
-                        sp = os.path.join(folder_path, fn + ".lnk")
+                    if shortcuts:
+                        sp = os.path.join(folder, fn + ".lnk")
                         if not os.path.exists(sp):
                             try:
                                 ps = f'$s=(New-Object -COM WScript.Shell).CreateShortcut("{sp}");$s.TargetPath="{path}";$s.Save()'
                                 subprocess.run(['powershell', '-Command', ps], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                                organized += 1
+                                count += 1
                             except:
                                 pass
                     else:
-                        dst = os.path.join(folder_path, fn)
+                        dst = os.path.join(folder, fn)
                         if not os.path.exists(dst):
                             shutil.copy2(path, dst)
-                            organized += 1
-        
-        elif mode == "category":
+                            count += 1
+        else:
             for cat in ['solo', 'duo', 'group', 'no_faces']:
                 photos = self.db.get_photos_by_category(cat)
                 if not photos:
                     continue
                 
-                folder_path = os.path.join(self.output_folder, cat)
-                os.makedirs(folder_path, exist_ok=True)
+                folder = os.path.join(self.output_folder, cat)
+                os.makedirs(folder, exist_ok=True)
                 
                 for pid, path, fn, fc in photos:
-                    if use_shortcuts:
-                        sp = os.path.join(folder_path, fn + ".lnk")
+                    if shortcuts:
+                        sp = os.path.join(folder, fn + ".lnk")
                         if not os.path.exists(sp):
                             try:
                                 ps = f'$s=(New-Object -COM WScript.Shell).CreateShortcut("{sp}");$s.TargetPath="{path}";$s.Save()'
                                 subprocess.run(['powershell', '-Command', ps], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                                organized += 1
+                                count += 1
                             except:
                                 pass
                     else:
-                        dst = os.path.join(folder_path, fn)
+                        dst = os.path.join(folder, fn)
                         if not os.path.exists(dst):
                             shutil.copy2(path, dst)
-                            organized += 1
+                            count += 1
         
-        self.organize_status.configure(text=f"Created {organized} files!")
-        messagebox.showinfo("Done", f"Organized {organized} photos!")
+        self.org_status.configure(text=f"Created {count} files!")
+        messagebox.showinfo("Done", f"Organized {count} photos!")
     
     def run(self):
         self.window.mainloop()
