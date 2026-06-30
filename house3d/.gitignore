@@ -1,0 +1,7 @@
+# regenerable build artifacts
+node_modules/
+house.dxf
+scene.json
+# temp preview files used for headless screenshots
+_preview.html
+_vendor/
