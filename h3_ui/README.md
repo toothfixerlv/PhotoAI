@@ -45,6 +45,23 @@ candidate graph JSON to that filename.)
   (timestamp, generator, prompt ID, seed, length, image, output prefix,
   full prompt text) so the manifest never goes stale.
 
+## Prompt library (v1.1)
+
+The "Prompt library" dropdown above the prompt box collects reusable
+prompts from three sources, newest first:
+
+1. **Presets** — optional `h3_ui_prompts.json` next to the script, a JSON
+   list of `{"label": "...", "prompt": "..."}` objects. Put your best
+   hand-tuned prompts here.
+2. **Past runs** — the full prompt text of everything submitted through
+   this UI (from the run log).
+3. **Past renders** — prompts recovered from the metadata embedded in the
+   newest rendered videos under the output root, including renders made
+   outside this UI (e.g. the seed-26080910 kicks shot). This is how you
+   get the proven, fully detailed prompts back with one click.
+
+Picking an entry fills the prompt box; edit freely before generating.
+
 ## Provenance: telling Claude output apart from Codex output
 
 Both AIs share the same ComfyUI server and output root, so provenance is

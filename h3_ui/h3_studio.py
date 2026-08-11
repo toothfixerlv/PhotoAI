@@ -98,6 +98,8 @@ BASE_GRAPH_FILE = (
     Path(CONFIG["base_graph_file"]) if CONFIG["base_graph_file"] else SCRIPT_DIR / "h3_ui_base_graph.json"
 )
 
+PROMPTS_FILE = SCRIPT_DIR / "h3_ui_prompts.json"
+
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 VIDEO_EXTS = {".mp4", ".webm", ".mov"}
 
@@ -156,6 +158,57 @@ def extract_graph_from_video(path):
         if _looks_like_api_graph(data):
             return data
     return None
+
+
+_prompt_cache = {}  # path str -> (mtime, prompt text or None)
+
+
+def extract_prompt_from_video(path):
+    """Pull the generation prompt out of a rendered file's embedded graph."""
+    key = str(path)
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    cached = _prompt_cache.get(key)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    graph = extract_graph_from_video(path)
+    prompt = None
+    if graph:
+        for node in graph.values():
+            if node.get("class_type") == "MiniMaxH3ImageToVideo":
+                prompt = node.get("inputs", {}).get("prompt")
+                break
+    _prompt_cache[key] = (mtime, prompt)
+    return prompt
+
+
+def prompt_library():
+    """Reusable prompts: presets file, then run log, then past renders."""
+    lib, seen = [], set()
+
+    def add(label, text):
+        if text and text.strip() and text not in seen:
+            seen.add(text)
+            lib.append({"label": label, "prompt": text})
+
+    if PROMPTS_FILE.exists():
+        try:
+            for item in json.loads(PROMPTS_FILE.read_text(encoding="utf-8")):
+                add(item.get("label", "preset"), item.get("prompt"))
+        except Exception:  # noqa: BLE001
+            pass
+    for rec in reversed(read_runs_log()[-20:]):
+        add(f"run seed {rec.get('seed')}", rec.get("prompt_text"))
+    if OUTPUT_DIR.exists():
+        vids = sorted(
+            (p for p in OUTPUT_DIR.rglob("*") if p.suffix.lower() in VIDEO_EXTS),
+            key=lambda p: p.stat().st_mtime, reverse=True,
+        )
+        for v in vids[:10]:
+            add(f"render: {v.stem[:60]}", extract_prompt_from_video(v))
+    return lib[:20]
 
 
 def load_base_graph():
@@ -446,6 +499,8 @@ word-break:break-all}
 <label>Input image (from Inputs\\MiniMax-H3)</label>
 <select id="image"></select>
 <img id="thumb" alt="input preview">
+<label>Prompt library (presets, past runs, recovered from renders)</label>
+<select id="library"><option value="">&mdash; pick a past prompt &mdash;</option></select>
 <label>Prompt</label>
 <textarea id="prompt"></textarea>
 <div class="row">
@@ -470,7 +525,7 @@ word-break:break-all}
 </main>
 <script>
 const $=id=>document.getElementById(id);
-let lastGallery="";
+let lastGallery="";let lib=[];let libKey="";
 async function j(url,opts){const r=await fetch(url,opts);return r.json()}
 function esc(s){return String(s).replace(/[&<>"']/g,
 c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
@@ -490,6 +545,13 @@ async function refreshState(){
         o.value=o.textContent=n;sel.appendChild(o)}
       if([...sel.options].some(o=>o.value===cur))sel.value=cur;
       showThumb();}
+    const lk=JSON.stringify((s.prompt_library||[]).map(p=>p.label));
+    if(lk!==libKey){libKey=lk;lib=s.prompt_library||[];
+      const L=$('library');const cur=L.value;
+      L.innerHTML='<option value="">&mdash; pick a past prompt &mdash;</option>';
+      lib.forEach((p,i)=>{const o=document.createElement('option');
+        o.value=i;o.textContent=p.label;L.appendChild(o)});
+      if([...L.options].some(o=>o.value===cur))L.value=cur;}
     if(!$('seed').value)$('seed').value=s.next_seed;
     if(!$('prompt').value)$('prompt').value=s.default_prompt;
     if(!$('subfolder').value)$('subfolder').value=s.default_subfolder;
@@ -521,6 +583,8 @@ function showThumb(){const v=$('image').value;
   if(v){$('thumb').src='/media/input/'+encodeURIComponent(v);
     $('thumb').style.display='block'}else{$('thumb').style.display='none'}}
 $('image').addEventListener('change',showThumb);
+$('library').addEventListener('change',()=>{const v=$('library').value;
+  if(v!=='')$('prompt').value=lib[+v].prompt});
 $('go').addEventListener('click',async()=>{
   $('go').disabled=true;$('msg').textContent='Submitting...';$('msg').className='';
   try{
@@ -540,7 +604,7 @@ refreshState();setInterval(refreshState,3000);
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "H3Studio/1.0"
+    server_version = "H3Studio/1.1"
 
     def log_message(self, fmt, *args):  # quieter console
         pass
@@ -666,6 +730,7 @@ class Handler(BaseHTTPRequestHandler):
             "inputs": list_input_images(),
             "gallery": list_output_videos(),
             "jobs": job_statuses(),
+            "prompt_library": prompt_library(),
             "next_seed": next_seed(),
             "default_prompt": CONFIG["default_prompt"],
             "default_subfolder": CONFIG["default_subfolder"],
