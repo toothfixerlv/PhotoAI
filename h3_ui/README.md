@@ -45,6 +45,37 @@ candidate graph JSON to that filename.)
   (timestamp, generator, prompt ID, seed, length, image, output prefix,
   full prompt text) so the manifest never goes stale.
 
+## Modes (v1.2): first-frame, Ref2VA references, first+last, and more
+
+The **Mode** dropdown at the top of the form selects which H3 workflow to
+run. Each mode comes from a workflow template graph, and the form adapts
+automatically: every image slot in the graph gets its own picker with a
+preview thumbnail (e.g. Ref2VA shows one picker per reference image).
+
+**What H3 actually offers** (so expectations match reality): the open
+release ships two checkpoints — **FL2VA** (text-to-video, first-frame,
+and first+last-frame conditioning; ~5–7 min/shot) and **Ref2VA**
+(reference-image conditioned generation for identity consistency;
+~24–26 min/shot). H3 does **not** have Kling-style "motion reference" or
+"elements" features; references here are images that lock identity and
+appearance, not motion transfer.
+
+**Adding a mode** is one file: save an API-format graph as
+`h3_ui_graph_<mode>.json` next to the script and restart the app. The
+easiest source is a completed render — ask the local Claude session, e.g.:
+
+> Recover the Ref2VA graph from the Ref2VA Tyson proof render's mp4
+> metadata and save it as h3_ui_graph_reference.json in the h3_ui folder.
+
+Slots are discovered generically: every `LoadImage` node becomes a
+picker (labelled from the node's `_meta.title` if set — give reference
+nodes titles like "Reference: Tyson" for a friendly UI), the node
+carrying `prompt` (preferring one that also has `length`) takes the
+prompt box, `noise_seed`/`seed` takes the seed, and every
+`filename_prefix` gets the output prefix. If a mode's graph has no
+`length` input, the length dropdown hides itself. The run log records
+the mode and the chosen image for every slot.
+
 ## Prompt library (v1.1)
 
 The "Prompt library" dropdown above the prompt box collects reusable

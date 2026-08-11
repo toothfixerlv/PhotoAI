@@ -106,8 +106,9 @@ VIDEO_EXTS = {".mp4", ".webm", ".mov"}
 _jobs_lock = threading.Lock()
 _jobs = {}  # prompt_id -> record dict (also appended to runs log)
 
-BASE_GRAPH = None
-BASE_GRAPH_SOURCE = ""
+# mode_id -> {label, graph, source, images, prompt_node, seed_node,
+#              seed_key, save_nodes, has_length}
+TEMPLATES = {}
 
 
 # --------------------------------------------------------------------------
@@ -211,53 +212,95 @@ def prompt_library():
     return lib[:20]
 
 
-def load_base_graph():
-    global BASE_GRAPH, BASE_GRAPH_SOURCE
+def analyze_graph(graph):
+    """Find the patchable slots in an API-format graph, generically:
+    every LoadImage node becomes an image picker (labelled from its
+    _meta.title if the workflow author set one), plus the prompt, seed,
+    and save nodes."""
+    info = {"images": [], "prompt_node": None, "seed_node": None,
+            "seed_key": "noise_seed", "save_nodes": [], "has_length": False}
+    prompt_candidates = []
+    for nid, node in graph.items():
+        if not isinstance(node, dict):
+            continue
+        ctype = node.get("class_type", "")
+        ins = node.get("inputs", {}) or {}
+        title = (node.get("_meta") or {}).get("title") or ""
+        if ctype == "LoadImage":
+            info["images"].append(
+                {"node": nid, "label": title or f"Image (node {nid})"}
+            )
+        if isinstance(ins.get("prompt"), str):
+            prompt_candidates.append((0 if "length" in ins else 1, len(nid), nid))
+        if "noise_seed" in ins or "seed" in ins:
+            if info["seed_node"] is None:
+                info["seed_node"] = nid
+                info["seed_key"] = "noise_seed" if "noise_seed" in ins else "seed"
+        if "filename_prefix" in ins:
+            info["save_nodes"].append(nid)
+    if prompt_candidates:
+        prompt_candidates.sort()
+        nid = prompt_candidates[0][2]
+        info["prompt_node"] = nid
+        info["has_length"] = "length" in (graph[nid].get("inputs") or {})
+    info["images"].sort(key=lambda s: (len(s["node"]), s["node"]))
+    return info
+
+
+def _template_ok(info):
+    return bool(info["prompt_node"] and info["seed_node"] and info["save_nodes"])
+
+
+def load_templates():
+    """Build the mode list: the default first-frame FL2VA graph plus any
+    h3_ui_graph_<mode>.json files placed next to this script."""
+    TEMPLATES.clear()
+
+    def register(mode_id, label, graph, source):
+        info = analyze_graph(graph)
+        if not _template_ok(info):
+            print(f"WARNING: template {mode_id} ({source}) lacks "
+                  "prompt/seed/save nodes; skipped.")
+            return
+        TEMPLATES[mode_id] = dict(info, label=label, graph=graph, source=source)
+
+    graph, source = None, ""
     if BASE_GRAPH_FILE.exists():
         data = json.loads(BASE_GRAPH_FILE.read_text(encoding="utf-8"))
         if _looks_like_api_graph(data):
-            BASE_GRAPH = data
-            BASE_GRAPH_SOURCE = str(BASE_GRAPH_FILE)
-            return
-        print(f"WARNING: {BASE_GRAPH_FILE} is not an API-format graph; ignoring it.")
-    # Fall back: newest videos under the output root, most recent first.
-    candidates = sorted(
-        (p for p in OUTPUT_DIR.rglob("*") if p.suffix.lower() in VIDEO_EXTS),
-        key=lambda p: p.stat().st_mtime, reverse=True,
-    )
-    for video in candidates[:15]:
-        graph = extract_graph_from_video(video)
-        if graph and find_required_nodes(graph):
-            BASE_GRAPH = graph
-            BASE_GRAPH_SOURCE = f"metadata of {video.name}"
-            if not BASE_GRAPH_FILE.exists():
-                BASE_GRAPH_FILE.write_text(
-                    json.dumps(graph, indent=2), encoding="utf-8"
-                )
-                print(f"Saved recovered base graph to {BASE_GRAPH_FILE}")
-            return
-    BASE_GRAPH = None
-    BASE_GRAPH_SOURCE = ""
+            graph, source = data, str(BASE_GRAPH_FILE)
+        else:
+            print(f"WARNING: {BASE_GRAPH_FILE} is not an API-format graph; ignoring it.")
+    if graph is None:
+        # Fall back: newest videos under the output root, most recent first.
+        candidates = sorted(
+            (p for p in OUTPUT_DIR.rglob("*") if p.suffix.lower() in VIDEO_EXTS),
+            key=lambda p: p.stat().st_mtime, reverse=True,
+        )
+        for video in candidates[:15]:
+            data = extract_graph_from_video(video)
+            if data and _template_ok(analyze_graph(data)):
+                graph, source = data, f"metadata of {video.name}"
+                if not BASE_GRAPH_FILE.exists():
+                    BASE_GRAPH_FILE.write_text(
+                        json.dumps(data, indent=2), encoding="utf-8"
+                    )
+                    print(f"Saved recovered base graph to {BASE_GRAPH_FILE}")
+                break
+    if graph is not None:
+        register("first_frame", "First frame → video (FL2VA)", graph, source)
 
-
-def find_required_nodes(graph):
-    """Locate the four nodes we patch, by class_type. Returns None if the
-    graph is ambiguous (multiple candidates) or incomplete."""
-    wanted = {
-        "LoadImage": None,
-        "MiniMaxH3ImageToVideo": None,
-        "RandomNoise": None,
-        "SaveVideo": None,
-    }
-    for node_id, node in graph.items():
-        ctype = node.get("class_type")
-        if ctype in wanted:
-            if wanted[ctype] is not None:
-                return None  # ambiguous graph; require a single-shot graph
-            wanted[ctype] = node_id
-    if any(v is None for v in wanted.values()):
-        return None
-    return wanted
+    for path in sorted(SCRIPT_DIR.glob("h3_ui_graph_*.json")):
+        mode_id = path.stem[len("h3_ui_graph_"):]
+        if not mode_id or mode_id in TEMPLATES:
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            print(f"WARNING: could not parse {path.name}: {exc}")
+            continue
+        if _looks_like_api_graph(data):
+            register(mode_id, mode_id.replace("_", " ").title(), data, str(path))
 
 
 # --------------------------------------------------------------------------
@@ -332,15 +375,23 @@ def safe_under(root, relpath):
 # Job submission
 # --------------------------------------------------------------------------
 def submit_job(form):
-    if BASE_GRAPH is None:
-        return None, "No base graph loaded. See the banner at the top of the page."
-    nodes = find_required_nodes(BASE_GRAPH)
-    if not nodes:
-        return None, "Base graph is missing or has duplicate required nodes."
+    if not TEMPLATES:
+        return None, "No workflow templates loaded. See the banner at the top of the page."
+    mode = form.get("mode") or next(iter(TEMPLATES))
+    tpl = TEMPLATES.get(mode)
+    if not tpl:
+        return None, f"Unknown mode: {mode!r}"
 
-    image = form.get("image", "")
-    if image not in list_input_images():
-        return None, f"Input image not found in {INPUT_DIR}: {image!r}"
+    inputs_avail = set(list_input_images())
+    images = form.get("images") or {}
+    if not isinstance(images, dict):
+        return None, "images must be an object mapping node id to filename."
+    for slot in tpl["images"]:
+        chosen = images.get(slot["node"], "")
+        if not chosen:
+            return None, f"Missing image for slot: {slot['label']}"
+        if chosen not in inputs_avail:
+            return None, f"Input image not found in {INPUT_DIR}: {chosen!r}"
 
     prompt_text = (form.get("prompt") or "").strip()
     if not prompt_text:
@@ -348,11 +399,16 @@ def submit_job(form):
 
     try:
         seed = int(form.get("seed", ""))
-        length = int(form.get("length", ""))
     except ValueError:
-        return None, "Seed and length must be integers."
-    if length < 5 or length > 241 or (length - 1) % 4 != 0:
-        return None, "Length must be 4n+1 (e.g. 121 or 141)."
+        return None, "Seed must be an integer."
+    length = None
+    if tpl["has_length"]:
+        try:
+            length = int(form.get("length", ""))
+        except ValueError:
+            return None, "Length must be an integer."
+        if length < 5 or length > 241 or (length - 1) % 4 != 0:
+            return None, "Length must be 4n+1 (e.g. 121 or 141)."
     used = {r.get("seed") for r in read_runs_log()}
     if seed in used:
         return None, f"Seed {seed} already used in the runs log; pick a new one."
@@ -366,12 +422,15 @@ def submit_job(form):
     prefix = f"{subfolder}/{name}"
 
     import copy
-    graph = copy.deepcopy(BASE_GRAPH)
-    graph[nodes["LoadImage"]]["inputs"]["image"] = image
-    graph[nodes["MiniMaxH3ImageToVideo"]]["inputs"]["prompt"] = prompt_text
-    graph[nodes["MiniMaxH3ImageToVideo"]]["inputs"]["length"] = length
-    graph[nodes["RandomNoise"]]["inputs"]["noise_seed"] = seed
-    graph[nodes["SaveVideo"]]["inputs"]["filename_prefix"] = prefix
+    graph = copy.deepcopy(tpl["graph"])
+    for slot in tpl["images"]:
+        graph[slot["node"]]["inputs"]["image"] = images[slot["node"]]
+    graph[tpl["prompt_node"]]["inputs"]["prompt"] = prompt_text
+    if length is not None:
+        graph[tpl["prompt_node"]]["inputs"]["length"] = length
+    graph[tpl["seed_node"]]["inputs"][tpl["seed_key"]] = seed
+    for nid in tpl["save_nodes"]:
+        graph[nid]["inputs"]["filename_prefix"] = prefix
 
     try:
         result = comfy_post("/prompt", {"prompt": graph, "client_id": str(uuid.uuid4())})
@@ -384,10 +443,11 @@ def submit_job(form):
     record = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "generator": "claude-h3-studio",
+        "mode": mode,
         "prompt_id": prompt_id,
         "seed": seed,
         "length": length,
-        "image": image,
+        "images": {slot["label"]: images[slot["node"]] for slot in tpl["images"]},
         "filename_prefix": prefix,
         "prompt_text": prompt_text,
     }
@@ -496,16 +556,17 @@ word-break:break-all}
 <main>
 <section>
 <h2>New generation</h2>
-<label>Input image (from Inputs\\MiniMax-H3)</label>
-<select id="image"></select>
-<img id="thumb" alt="input preview">
+<label>Mode</label>
+<select id="mode"></select>
+<div id="modehint" style="font-size:12px;color:var(--dim);margin-top:4px"></div>
+<div id="imageslots"></div>
 <label>Prompt library (presets, past runs, recovered from renders)</label>
 <select id="library"><option value="">&mdash; pick a past prompt &mdash;</option></select>
 <label>Prompt</label>
 <textarea id="prompt"></textarea>
 <div class="row">
 <div><label>Seed</label><input id="seed" type="number"></div>
-<div><label>Length (4n+1)</label>
+<div id="lengthwrap"><label>Length (4n+1)</label>
 <select id="length"><option>121</option><option>141</option></select></div>
 </div>
 <div class="row">
@@ -526,6 +587,33 @@ word-break:break-all}
 <script>
 const $=id=>document.getElementById(id);
 let lastGallery="";let lib=[];let libKey="";
+let modes=[];let modeKey="";let inputsList=[];let inputsKey="";
+function renderSlots(){
+  const m=modes.find(x=>x.id===$('mode').value)||modes[0];
+  const c=$('imageslots');
+  const prev={};c.querySelectorAll('select').forEach(s=>prev[s.dataset.node]=s.value);
+  c.innerHTML='';
+  if(!m)return;
+  $('lengthwrap').style.display=m.has_length?'':'none';
+  $('modehint').textContent=modes.length<=1?
+    'Only first-frame mode is loaded. Add Ref2VA / first+last modes by saving graphs as h3_ui_graph_<name>.json - see README.':'';
+  for(const slot of m.images){
+    const lab=document.createElement('label');lab.textContent=
+      slot.label+'  (from Inputs\\\\MiniMax-H3)';
+    const sel=document.createElement('select');sel.dataset.node=slot.node;
+    for(const n of inputsList){const o=document.createElement('option');
+      o.value=o.textContent=n;sel.appendChild(o)}
+    if(prev[slot.node]&&[...sel.options].some(o=>o.value===prev[slot.node]))
+      sel.value=prev[slot.node];
+    const img=document.createElement('img');
+    img.style.cssText='max-width:100%;border-radius:8px;margin-top:6px';
+    const upd=()=>{if(sel.value){img.src='/media/input/'+
+      encodeURIComponent(sel.value);img.style.display='block'}
+      else img.style.display='none'};
+    sel.addEventListener('change',upd);upd();
+    c.appendChild(lab);c.appendChild(sel);c.appendChild(img);
+  }
+}
 async function j(url,opts){const r=await fetch(url,opts);return r.json()}
 function esc(s){return String(s).replace(/[&<>"']/g,
 c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
@@ -538,13 +626,15 @@ async function refreshState(){
     if(!s.base_graph_ok){$('banner').style.display='block';
       $('banner').textContent='No base graph available: '+s.base_graph_msg;}
     else{$('banner').style.display='none'}
-    const sel=$('image');
-    if(sel.options.length!==s.inputs.length){
-      const cur=sel.value;sel.innerHTML='';
-      for(const n of s.inputs){const o=document.createElement('option');
-        o.value=o.textContent=n;sel.appendChild(o)}
-      if([...sel.options].some(o=>o.value===cur))sel.value=cur;
-      showThumb();}
+    const mk=JSON.stringify((s.modes||[]).map(m=>m.id+':'+m.images.length));
+    const ik=JSON.stringify(s.inputs);
+    if(mk!==modeKey){modeKey=mk;modes=s.modes||[];
+      const M=$('mode');const cur=M.value;M.innerHTML='';
+      for(const m of modes){const o=document.createElement('option');
+        o.value=m.id;o.textContent=m.label;M.appendChild(o)}
+      if([...M.options].some(o=>o.value===cur))M.value=cur;
+      inputsList=s.inputs;inputsKey=ik;renderSlots();}
+    else if(ik!==inputsKey){inputsList=s.inputs;inputsKey=ik;renderSlots();}
     const lk=JSON.stringify((s.prompt_library||[]).map(p=>p.label));
     if(lk!==libKey){libKey=lk;lib=s.prompt_library||[];
       const L=$('library');const cur=L.value;
@@ -579,16 +669,15 @@ async function refreshState(){
         g.appendChild(d);}}
   }catch(e){$('server-dot').className='';}
 }
-function showThumb(){const v=$('image').value;
-  if(v){$('thumb').src='/media/input/'+encodeURIComponent(v);
-    $('thumb').style.display='block'}else{$('thumb').style.display='none'}}
-$('image').addEventListener('change',showThumb);
+$('mode').addEventListener('change',renderSlots);
 $('library').addEventListener('change',()=>{const v=$('library').value;
   if(v!=='')$('prompt').value=lib[+v].prompt});
 $('go').addEventListener('click',async()=>{
   $('go').disabled=true;$('msg').textContent='Submitting...';$('msg').className='';
   try{
-    const body={image:$('image').value,prompt:$('prompt').value,
+    const imgs={};
+    $('imageslots').querySelectorAll('select').forEach(s=>imgs[s.dataset.node]=s.value);
+    const body={mode:$('mode').value,images:imgs,prompt:$('prompt').value,
       seed:$('seed').value,length:$('length').value,
       subfolder:$('subfolder').value,name:$('name').value};
     const r=await j('/api/generate',{method:'POST',
@@ -604,7 +693,7 @@ refreshState();setInterval(refreshState,3000);
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "H3Studio/1.1"
+    server_version = "H3Studio/1.2"
 
     def log_message(self, fmt, *args):  # quieter console
         pass
@@ -720,13 +809,19 @@ class Handler(BaseHTTPRequestHandler):
         return {
             "server_ok": server_ok,
             "vram_free_gb": vram_free,
-            "base_graph_ok": BASE_GRAPH is not None,
+            "base_graph_ok": bool(TEMPLATES),
             "base_graph_msg": (
-                f"loaded from {BASE_GRAPH_SOURCE}" if BASE_GRAPH else
+                "; ".join(f"{t['label']}: {t['source']}" for t in TEMPLATES.values())
+                if TEMPLATES else
                 "place an API-format graph at "
                 f"{BASE_GRAPH_FILE} or render once from ComfyUI so a video "
                 "with embedded metadata exists under the output folder."
             ),
+            "modes": [
+                {"id": mid, "label": t["label"], "images": t["images"],
+                 "has_length": t["has_length"]}
+                for mid, t in TEMPLATES.items()
+            ],
             "inputs": list_input_images(),
             "gallery": list_output_videos(),
             "jobs": job_statuses(),
@@ -738,11 +833,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    load_base_graph()
-    if BASE_GRAPH:
-        print(f"Base graph: {BASE_GRAPH_SOURCE}")
+    load_templates()
+    if TEMPLATES:
+        for mid, t in TEMPLATES.items():
+            print(f"Mode '{mid}' ({t['label']}): {t['source']} "
+                  f"[{len(t['images'])} image slot(s)]")
     else:
-        print("WARNING: no base graph found yet - the UI will explain how to fix this.")
+        print("WARNING: no workflow templates found yet - the UI will explain how to fix this.")
     addr = (CONFIG["listen_host"], CONFIG["listen_port"])
     httpd = ThreadingHTTPServer(addr, Handler)
     print(f"H3 Studio running at http://{addr[0]}:{addr[1]}  (Ctrl+C to stop)")
